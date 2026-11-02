@@ -151,6 +151,18 @@ separate pipes. The controller preserves the tool's permissions and action space
 data, never code, and a guard that cannot be read defers to the model instead of guessing. Priors-based admission
 refuses high-risk commands (`rm -rf`, `sudo`, `docker`, `curl | sh`) and anything under tests/solution paths.
 
+Hardening beyond the reference adapter:
+
+- **Environment is scrubbed.** Variables whose name matches `key|password|secret|token|credential|passwd` are removed
+  before a command runs, so a bank command cannot echo a credential into the transcript. The reference strips the same
+  names for its worker shells.
+- **Default timeout.** A command without `timeout_sec` is killed after 120 s (exit 124) instead of holding the turn.
+- **Two views of one receipt.** Guards evaluate the exact receipt; the model sees at most 8 KiB of each stream, with
+  the tail kept because that is what a guard or a person usually reads.
+- **Prompt section, not prompt replacement.** The authoring instruction is injected as a prompt section, so pi keeps
+  patching only changed sections instead of replacing the whole system prompt (and other extensions keep their own
+  sections intact).
+
 ## License
 
 Apache-2.0, matching the upstream project. HarnessMM is research code by Yuhua Jiang, Chang Xu, Feifei Gao and

@@ -11,6 +11,17 @@ import { existsSync } from "node:fs";
 
 /** Maximum bytes of each stream kept in the receipt; the rest is dropped with a marker. */
 const MAX_STREAM_BYTES = 96 * 1024;
+/** Bytes of output the model sees; the full receipt still goes to the guards. */
+export const MODEL_OUTPUT_BYTES = 8 * 1024;
+/** Default wall clock before a command is killed, so a hung command cannot hold the turn. */
+export const DEFAULT_TIMEOUT_SEC = 120;
+
+/**
+ * Environment variables a bank command must not see. The reference setup strips
+ * names containing KEY, PASSWORD, SECRET or TOKEN for the same reason: a command
+ * can otherwise echo a credential into the transcript.
+ */
+const SECRET_NAME = /(?:key|password|secret|token|credential|passwd)/i;
 
 /** What a native terminal call produced. This is the only evidence guards read. */
 export interface TerminalReceipt {
@@ -34,7 +45,7 @@ export async function runTerminal(request: TerminalRequest, options: { cwd: stri
   const shell = options.shell ?? "/bin/bash";
   const child = spawn(shell, ["-c", request.command], {
     cwd,
-    env: process.env,
+    env: scrubbedEnvironment(),
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });
@@ -62,7 +73,7 @@ export async function runTerminal(request: TerminalRequest, options: { cwd: stri
   });
 
   let timedOut = false;
-  const timeoutMs = request.timeout_sec ? request.timeout_sec * 1000 : 0;
+  const timeoutMs = (request.timeout_sec ?? DEFAULT_TIMEOUT_SEC) * 1000;
   const timer = timeoutMs > 0
     ? setTimeout(() => {
         timedOut = true;
@@ -110,7 +121,26 @@ function killTree(pid: number): void {
   }
 }
 
-/** The receipt as the model and the guards see it: exact JSON, one text block. */
+/** The exact receipt, unchanged: guards evaluate this, never a preview. */
 export function receiptText(receipt: TerminalReceipt): string {
   return JSON.stringify(receipt);
+}
+
+/** The same receipt, shortened for the model so one dump cannot flood the context. */
+export function modelReceiptText(receipt: TerminalReceipt): string {
+  const budget = MODEL_OUTPUT_BYTES;
+  const clip = (text: string): string =>
+    text.length <= budget ? text : `[${text.length - budget} bytes omitted]\n${text.slice(-budget)}`;
+  const shortened = { ...receipt, stdout: clip(receipt.stdout), stderr: receipt.stderr === null ? null : clip(receipt.stderr) };
+  return JSON.stringify(shortened);
+}
+
+/** Copy of the environment without anything that looks like a credential. */
+export function scrubbedEnvironment(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const clean: Record<string, string> = {};
+  for (const [name, value] of Object.entries(source)) {
+    if (value === undefined || SECRET_NAME.test(name)) continue;
+    clean[name] = value;
+  }
+  return clean;
 }

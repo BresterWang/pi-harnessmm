@@ -19,7 +19,7 @@ import { BankContractError, planInstruction, validateCotJev, type Policy } from 
 import { SubstitutionController, type ControllerEvent } from "../src/controller.ts";
 import type { TrainPriors } from "../src/admission.ts";
 import { compactMessages, projectionBinding, slowTokensOf, toAuthoringMessage, userRequests, type PiMessage } from "../src/pi-messages.ts";
-import { receiptText, runTerminal, type TerminalReceipt } from "../src/terminal.ts";
+import { modelReceiptText, receiptText, runTerminal, type TerminalReceipt } from "../src/terminal.ts";
 
 const LEDGER = "harnessmm-ledger";
 
@@ -68,10 +68,15 @@ export default function harnessmm(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => restore(ctx));
   pi.on("session_tree", async (_event, ctx) => restore(ctx));
 
-  // The authoring instruction is the upstream text for this policy version.
+  // The authoring instruction is the upstream text for this policy version. It goes
+  // into a prompt section so pi patches only that section instead of replacing the
+  // whole system prompt, which keeps the cached prefix stable across turns.
   pi.on("before_agent_start", async (event) => {
     if (!policy.enabled) return;
-    return { systemPrompt: `${event.systemPrompt}\n\n${planInstruction(policy)}` };
+    event.systemPromptOptions.sections = {
+      ...event.systemPromptOptions.sections,
+      "harnessmm-authoring": planInstruction(policy),
+    };
   });
 
   // Remove the authored bank from the slow context, preserving every native action.
@@ -142,7 +147,7 @@ export default function harnessmm(pi: ExtensionAPI) {
       if (dispatch.getStore() === true) {
         // A bank-authorized action arriving through the original tool interface.
         const receipt = await runTerminal(params, { cwd: ctx.cwd, signal });
-        return { content: [{ type: "text", text: receiptText(receipt) }], details: { returnCode: receipt.return_code, substitutedByController: true } };
+        return { content: [{ type: "text", text: modelReceiptText(receipt) }], details: { returnCode: receipt.return_code, substitutedByController: true } };
       }
       const branch = ctx.sessionManager.getBranch();
       const messages = branch.filter(entry => entry.type === "message").map(entry => (entry as { message: PiMessage }).message);
@@ -173,8 +178,8 @@ export default function harnessmm(pi: ExtensionAPI) {
         const receipt = await runRoot();
         pi.appendEntry(LEDGER, bankError ? { kind: "jev/invalid-bank", error: bankError } : { kind: "sar/no-bank", root_id: toolCallId });
         return {
-          content: [{ type: "text", text: receiptText(receipt) }],
-          details: { returnCode: receipt.return_code, substituted: 0, receipts: [receipt], events, bankError },
+          content: [{ type: "text", text: modelReceiptText(receipt) }],
+          details: { outcome: "plain", returnCode: receipt.return_code, substituted: 0, receipts: [receipt], events, bankError },
           ...(receipt.return_code !== 0 ? { isError: false } : {}),
         };
       }
@@ -232,8 +237,11 @@ export default function harnessmm(pi: ExtensionAPI) {
       const selectorTokens = events
         .filter(event => event.kind === "jev/decision")
         .reduce((total, event) => total + Number((event.usage as { totalTokens?: number } | undefined)?.totalTokens ?? 0), 0);
+      const outcome = committed === 0
+        ? (events.some(event => event.kind === "sar/defer" || event.kind === "jev/full-cot") ? "deferred" : "completed")
+        : (receipts.at(-1)!.receipt.return_code !== 0 ? "failed" : "completed");
       const report = [
-        `harnessmm: root executed, ${committed} substitution(s) certified`,
+        `harnessmm: ${outcome}; ${committed} substitution(s) certified`,
         ...receipts.map(item => `${item.label}: exit=${item.receipt.return_code}`),
         certificates.length ? `callbacks bypassed: ${certificates.length}` : "callbacks bypassed: 0",
         `complete-task cost: authoring turn ${authoringTokens} tokens, selector ${selectorTokens} tokens`,
@@ -241,8 +249,9 @@ export default function harnessmm(pi: ExtensionAPI) {
       for (const item of receipts) pi.appendEntry(LEDGER, { kind: "harnessmm/receipt", id: item.id, label: item.label, return_code: item.receipt.return_code });
 
       return {
-        content: [{ type: "text", text: `${report}\n\nreceipts:\n${receipts.map(item => receiptText(item.receipt)).join("\n")}` }],
+        content: [{ type: "text", text: `${report}\n\nreceipts:\n${receipts.map(item => modelReceiptText(item.receipt)).join("\n")}` }],
         details: {
+          outcome,
           returnCode: root.return_code,
           substituted: certificates.length,
           graphHash: bank.sha256,

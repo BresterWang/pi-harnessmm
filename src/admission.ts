@@ -44,17 +44,21 @@ export interface AdmissionResult {
  */
 export function deterministicAdmission(state: any, slowTokens: number, fullSAR = true): AdmissionResult {
   const receipt = state.public_results.at(-1);
+  // Each candidate is checked once and reused: the loop below needs every verdict
+  // twice (own eligibility and the deterministic-commit test).
+  const verdicts = new Map<AdmissionCandidate, ReturnType<typeof localGuard>>();
   const done = new Set<string>(["root", ...state.public_results.map((r: any) => r.call_id.split("_").at(-1))]);
   const eligible: AdmissionDecision[] = [];
   const rejected: AdmissionDecision[] = [];
   for (const candidate of state.candidates as AdmissionCandidate[]) {
     const node = candidate.node;
     const check = localGuard(node, receipt);
+    verdicts.set(candidate, check);
     const missingDependency = (node.dependency_ids ?? []).some((id: string) => !done.has(id));
     // Provider calls are the same backbone. The estimate is deliberately visible,
     // uses only paid TRAIN/earlier slow usage, and is not a guaranteed bound.
-    const locallyValid = (state.candidates as AdmissionCandidate[]).filter(
-      x => localGuard(x.node, receipt).eligible && (x.node.dependency_ids ?? []).every((id: string) => done.has(id)),
+    const locallyValid = (state.candidates as AdmissionCandidate[]).filter(x =>
+      (verdicts.get(x) ?? localGuard(x.node, receipt)).eligible && (x.node.dependency_ids ?? []).every((id: string) => done.has(id)),
     );
     const deterministic = fullSAR && locallyValid.length === 1;
     const fastUpper = deterministic
