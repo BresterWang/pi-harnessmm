@@ -194,6 +194,7 @@ export default function harnessmm(pi: ExtensionAPI) {
 
       const root = await runRoot();
       receipts.push({ id: toolCallId, label: "root", receipt: root });
+      let predecessorCallId = toolCallId;
       const results: PublicResult[] = [
         { call_id: toolCallId, is_error: root.return_code !== 0, status: "PARSED", value: { native_text: receiptText(root) } },
       ];
@@ -206,6 +207,7 @@ export default function harnessmm(pi: ExtensionAPI) {
           record({ kind: "jev/full-cot", bank_sha256: bank.sha256, reason: "bank_exhausted" });
           break;
         }
+        controller.precede(predecessorCallId);
         const state: BankState = {
           public_user_requests: userRequests(messages, authoringIndex),
           candidates,
@@ -221,6 +223,7 @@ export default function harnessmm(pi: ExtensionAPI) {
         receipts.push({ id: decision.call.id, label: decision.candidate.label!, receipt });
         results.push({ call_id: decision.call.id, is_error: receipt.return_code !== 0, status: "PARSED", value: { native_text: text } });
         previous = decision.candidate.label!;
+        predecessorCallId = decision.call.id;
         committed += 1;
         if (receipt.return_code !== 0) break;
       }

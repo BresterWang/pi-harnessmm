@@ -117,6 +117,15 @@ export class SubstitutionController {
   }
 
   /**
+   * Name the call whose receipt authorizes the next decision. The certificate binds
+   * it as `predecessor_callback_id`, so a substitution always points at the exact
+   * callback that produced its evidence.
+   */
+  precede(callbackId: string): void {
+    if (this.boundary) this.boundary.predecessor_callback_id = callbackId;
+  }
+
+  /**
    * Decide the next action from the current bank state.
    * Admission runs first; only admitted candidates reach the selector, and the
    * selector may only pick a label it was given.
