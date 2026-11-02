@@ -10,6 +10,7 @@
  * Ported from https://github.com/YuhuaJiang2002/HarnessMM:
  *   integrations/deepseek_harness/cot_jev.mjs, sar_v2.mjs, sar_admission.mjs
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import type { Context as ModelContext } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
@@ -21,6 +22,13 @@ import { compactMessages, projectionBinding, slowTokensOf, toAuthoringMessage, u
 import { receiptText, runTerminal, type TerminalReceipt } from "../src/terminal.ts";
 
 const LEDGER = "harnessmm-ledger";
+
+/**
+ * Set while the controller dispatches a substitute. A re-entered `terminal` call is
+ * one admitted action going through the native interface, so it must not re-parse
+ * the bank and must not recurse.
+ */
+const dispatch = new AsyncLocalStorage<boolean>();
 
 /** Terminal tool contract: the only tool a bank may name. */
 const TERMINAL_PARAMETERS = Type.Object({
@@ -89,6 +97,8 @@ export default function harnessmm(pi: ExtensionAPI) {
     description: "Report guarded decision reuse for this session",
     handler: async (_args, ctx) => {
       const certificates = ledger.filter(event => event.kind === "sar/substitution-certificate");
+      const slowTokens = ledger.filter(event => event.kind === "sar/slow-call").reduce((total, event) => total + Number(event.tokens ?? 0), 0);
+      const selectorTokens = ledger.filter(event => event.kind === "jev/decision").reduce((total, event) => total + Number((event.usage as { totalTokens?: number } | undefined)?.totalTokens ?? 0), 0);
       const deferred = ledger.filter(event => event.kind === "sar/defer");
       const authored = ledger.filter(event => event.kind === "sar/bank-authored");
       const extract = ledger.filter(event => event.kind === "sar/controller-bank-extracted");
@@ -99,6 +109,7 @@ export default function harnessmm(pi: ExtensionAPI) {
         `  banks removed from slow context: ${extract.length}`,
         `  certified substitutions: ${certificates.length}`,
         `  deferred to the model: ${deferred.length}, selector abstentions: ${fallbacks.length}`,
+        `  slow tokens seen: ${slowTokens}, selector tokens spent: ${selectorTokens}`,
         certificates.length
           ? `  last: ${certificates.slice(-3).map(event => String(event.candidate_id)).join(", ")}`
           : "  last: none",
@@ -128,6 +139,11 @@ export default function harnessmm(pi: ExtensionAPI) {
     parameters: TERMINAL_PARAMETERS,
 
     async execute(toolCallId, params, signal, _onUpdate, ctx) {
+      if (dispatch.getStore() === true) {
+        // A bank-authorized action arriving through the original tool interface.
+        const receipt = await runTerminal(params, { cwd: ctx.cwd, signal });
+        return { content: [{ type: "text", text: receiptText(receipt) }], details: { returnCode: receipt.return_code, substitutedByController: true } };
+      }
       const branch = ctx.sessionManager.getBranch();
       const messages = branch.filter(entry => entry.type === "message").map(entry => (entry as { message: PiMessage }).message);
       const authoring = toAuthoringMessage(messages.at(-1));
@@ -170,7 +186,9 @@ export default function harnessmm(pi: ExtensionAPI) {
         select: async input => selectLabel(ctx, input.system, input.state, input.labels),
         episodeId: ctx.sessionManager.getSessionId?.() ?? "pi-session",
       });
-      controller.ownSlowCall(toolCallId, slowTokensOf(messages[authoringIndex]));
+      const authoringTokens = slowTokensOf(messages[authoringIndex]);
+      controller.ownSlowCall(toolCallId, authoringTokens);
+      if (authoringTokens > 0) ledger.push({ kind: "sar/slow-call", native_attempt_id: toolCallId, tokens: authoringTokens });
       controller.noteBank(bank, toolCallId);
       controller.beginBoundary(toolCallId, previousToolCallId(messages, authoringIndex));
 
@@ -185,7 +203,7 @@ export default function harnessmm(pi: ExtensionAPI) {
       while (committed < policy.maximum_fast_steps) {
         const candidates = bank.candidates.filter(candidate => candidate.after === previous);
         if (!candidates.length) {
-          record({ kind: "sar/defer", bank_sha256: bank.sha256, reason: "bank_exhausted" });
+          record({ kind: "jev/full-cot", bank_sha256: bank.sha256, reason: "bank_exhausted" });
           break;
         }
         const state: BankState = {
@@ -196,7 +214,8 @@ export default function harnessmm(pi: ExtensionAPI) {
         const decision = await controller.decide(bank, state);
         if (decision.kind === "slow") break;
         const args = JSON.parse(decision.call.arguments) as { command: string; cwd?: string; timeout_sec?: number };
-        const receipt = await runTerminal(args, { cwd: ctx.cwd, signal });
+        // Through pi's own tool interface, so every hook and permission check sees it.
+        const receipt = await dispatch.run(true, () => callNative(ctx, args, signal));
         const text = receiptText(receipt);
         controller.observeTool({ call_id: decision.call.id, name: decision.call.name, arguments: args, result: { observation: text } });
         receipts.push({ id: decision.call.id, label: decision.candidate.label!, receipt });
@@ -207,10 +226,14 @@ export default function harnessmm(pi: ExtensionAPI) {
       }
 
       const certificates = events.filter(event => event.kind === "sar/substitution-certificate");
+      const selectorTokens = events
+        .filter(event => event.kind === "jev/decision")
+        .reduce((total, event) => total + Number((event.usage as { totalTokens?: number } | undefined)?.totalTokens ?? 0), 0);
       const report = [
         `harnessmm: root executed, ${committed} substitution(s) certified`,
         ...receipts.map(item => `${item.label}: exit=${item.receipt.return_code}`),
         certificates.length ? `callbacks bypassed: ${certificates.length}` : "callbacks bypassed: 0",
+        `complete-task cost: authoring turn ${authoringTokens} tokens, selector ${selectorTokens} tokens`,
       ].join("\n");
       for (const item of receipts) pi.appendEntry(LEDGER, { kind: "harnessmm/receipt", id: item.id, label: item.label, return_code: item.receipt.return_code });
 
@@ -227,6 +250,22 @@ export default function harnessmm(pi: ExtensionAPI) {
       };
     },
   });
+}
+
+/** Dispatch one admitted action through the registered `terminal` tool. */
+async function callNative(ctx: ExtensionToolContext, args: { command: string; cwd?: string; timeout_sec?: number }, signal?: AbortSignal): Promise<TerminalReceipt> {
+  const outcome = await ctx.executeTool("terminal", args, { signal });
+  const text = outcome.result.content
+    .filter((part): part is { type: "text"; text: string } => part.type === "text")
+    .map(part => part.text)
+    .join("\n");
+  try {
+    const parsed = JSON.parse(text) as TerminalReceipt;
+    if (typeof parsed.return_code === "number" && typeof parsed.stdout === "string") return parsed;
+  } catch {
+    /* fall through to an unreadable receipt */
+  }
+  return { return_code: outcome.isError ? 1 : 0, stdout: text, stderr: outcome.isError ? text : null };
 }
 
 /** The id of the tool call that preceded the authoring turn, if any. */

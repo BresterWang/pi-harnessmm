@@ -6,7 +6,7 @@
  * The controller is host-neutral: it decides, the host executes, and it records.
  */
 import { admit, compactState, deterministicAdmission, SELECTOR_SYSTEM, type AdmissionCandidate, type TrainPriors } from "./admission.ts";
-import { hash, type Policy } from "./policy.ts";
+import { byteUpper, hash, type Policy } from "./policy.ts";
 import { nativeCallId, type Bank, type BankState, type Candidate } from "./bank.ts";
 export type { BankState };
 
@@ -60,6 +60,8 @@ export class SubstitutionController {
   private readonly slowSequence: string[] = [];
   private readonly actorSequence: Array<{ kind: "slow" | "fast"; id: string }> = [];
   private boundary: { bypassed_slow_callback_id: string; predecessor_callback_id?: string } | null = null;
+  private authoringCallbackId = "unbound";
+  private substitutions = 0;
   private authors = 0;
   slowTokens = 0;
 
@@ -103,9 +105,15 @@ export class SubstitutionController {
     });
   }
 
-  /** Register the native boundary this substitution will bypass. */
-  beginBoundary(bypassedSlowCallbackId: string, predecessorCallbackId?: string): void {
-    this.boundary = { bypassed_slow_callback_id: bypassedSlowCallbackId, predecessor_callback_id: predecessorCallbackId };
+  /**
+   * Register the native boundary the next substitution bypasses: `attemptId` is the
+   * authoring call, and each substitution derives its own omitted-callback identity
+   * from it, so a certificate names the callback that did not happen.
+   */
+  beginBoundary(authoringCallbackId: string, predecessorCallbackId?: string): void {
+    this.boundary = { bypassed_slow_callback_id: authoringCallbackId, predecessor_callback_id: predecessorCallbackId };
+    this.authoringCallbackId = authoringCallbackId;
+    this.substitutions = 0;
   }
 
   /**
@@ -114,6 +122,12 @@ export class SubstitutionController {
    * selector may only pick a label it was given.
    */
   async decide(bank: Bank, state: BankState): Promise<Decision> {
+    // Upstream refuses an oversized public state instead of paying for a selector over it.
+    const bounded = this.policy.version >= 8 ? state.candidates : state;
+    if (byteUpper(bounded) > this.policy.maximum_public_bytes) {
+      this.record({ kind: "sar/defer", bank_sha256: bank.sha256, reason: "public_state_too_large", bytes: byteUpper(bounded), limit: this.policy.maximum_public_bytes });
+      return { kind: "slow", reason: "public_state_too_large" };
+    }
     const fullSAR = this.policy.version === 6;
     const priorsPath = this.policy.version === 8 || this.policy.version === 10;
     const admission: AdmissionResultKind = priorsPath
@@ -142,8 +156,12 @@ export class SubstitutionController {
           },
     );
     if (admission.eligible.length === 0) {
-      this.record({ kind: "sar/defer", bank_sha256: bank.sha256, reason: "no_admitted_candidate" });
-      return { kind: "slow", reason: "no_admitted_candidate" };
+      // Upstream names the two cases apart: an unreadable guard requests new CoT even
+      // when another branch looked eligible, and an empty eligible set defers.
+      const unknown = [...(admission as ReturnType<typeof deterministicAdmission>).rejected].some(item => item.reason === "guard_unknown");
+      const reason = unknown ? "guard_unknown" : "no_eligible_or_unexpected_receipt";
+      this.record({ kind: "sar/defer", bank_sha256: bank.sha256, reason });
+      return { kind: "slow", reason };
     }
 
     const candidates = admission.eligible.map(item => item.candidate as unknown as AdmissionCandidate);
@@ -192,6 +210,7 @@ export class SubstitutionController {
     }
     this.pending.delete(event.call_id);
     this.done.add(event.call_id);
+    this.substitutions += 1;
     let observation: any = event.result.observation;
     try {
       if (typeof observation === "string") observation = JSON.parse(observation);
@@ -208,7 +227,12 @@ export class SubstitutionController {
       bank_hash: item.bank_sha256,
       bank_sha256: item.bank_sha256,
       candidate_id: item.candidate.label,
-      ...item.boundary,
+      decision_id: `${item.bank_sha256.slice(0, 12)}:${item.candidate.label}`,
+      // The callback this execution replaced: the slow request that would have
+      // produced it, identified per boundary rather than by the authoring call.
+      bypassed_slow_callback_id: `${item.boundary.bypassed_slow_callback_id}:omitted:${this.substitutions}`,
+      predecessor_callback_id: item.boundary.predecessor_callback_id,
+      graph_hash: item.bank_sha256,
       exact_native_tool: event.name,
       exact_arguments: event.arguments,
       native_receipt_hash: hash(event.result),
@@ -218,7 +242,7 @@ export class SubstitutionController {
       guard: item.candidate.node?.guard,
       native_action_hash: hash([event.name, event.arguments]),
       actor_request_sequence: item.actor_sequence,
-      slow_requests_at_boundary: 0,
+      slow_requests_at_boundary: this.slowSequence.length - item.slow_snapshot,
       slow_sequence_before: item.slow_snapshot,
       slow_sequence_after: this.slowSequence.length,
       valid_substitution: true,

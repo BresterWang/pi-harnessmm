@@ -96,8 +96,12 @@ Every substitution records `certified-native-substitution/v1`:
 }
 ```
 
-The certificate binds the exact arguments, the exact receipt and the absence of an intervening slow request; it never
-claims anything about task correctness or counterfactual tokens. `/harnessmm` reports the ledger for the session:
+The certificate carries the paper's six fields: `graph_hash` (the authored graph), `decision_id` (its node),
+`predecessor_receipt`, `exact_arguments`, `native_receipt_hash` and `bypassed_slow_callback_id`, which names the slow
+callback that did **not** happen (`<authoring-call>:omitted:<n>`), plus the audited counts
+`slow_requests_at_boundary` / `slow_sequence_before` / `slow_sequence_after`. It binds the exact arguments, the exact
+receipt and the absence of an intervening slow request; it never claims anything about task correctness or
+counterfactual tokens. `/harnessmm` reports the ledger for the session:
 banks authored, banks removed from the slow context, certified substitutions, deferrals and selector abstentions.
 
 ## Fidelity to the reference implementation
@@ -110,7 +114,7 @@ Ported from `integrations/deepseek_harness/{cot_jev,sar_v2,sar_admission}.mjs`:
 | `<CHISEL_PLAN>` bank contract, `publicReceipt` decoding | `src/bank.ts` | upstream bank-contract cases (`tests/bank.test.ts`) |
 | `localGuard`, `receiptGuard` | `src/guard.ts` | 115 differential comparisons against the reference (`scripts/parity-check.mjs`) |
 | `deterministicAdmission`, `admit`, `actionType`, `compactState` | `src/admission.ts` | differential comparisons + admission cases (`tests/admission.test.ts`) |
-| `ExecutableSubdag` decisions, events, certificates | `src/controller.ts` | certificate and boundary cases (`tests/admission.test.ts`) |
+| `ExecutableSubdag` decisions, events, certificates | `src/controller.ts` | certificate, boundary, oversized-state and unknown-guard cases (`tests/admission.test.ts`) |
 | Bank removal from the slow context (`compactSession`) | `src/pi-messages.ts` | projection preserves reasoning and native actions |
 
 Reproduce:
@@ -127,7 +131,9 @@ pi is not a DSH/Chat-completions harness, so three things cannot be ported 1:1:
 1. **No stream interception.** The reference replaces the next model stream with a compiled tool call. pi has no
    hook that emits an assistant tool call, so the controller runs *inside* the root `terminal` call: the root and every
    admitted successor execute there and their receipts are returned together. Same decisions, same certificates, same
-   economics (N dependent steps per model turn), one fewer transcript entry per substitution.
+   economics (N dependent steps per model turn), one fewer transcript entry per substitution. Each substitute is
+   dispatched back through the registered `terminal` tool (`ctx.executeTool`), so pi's `tool_call`/`tool_result` hooks
+   and every other extension's permission checks see it, and pi records it as a nested call on the result.
 2. **No logprobs.** The reference selector requires a one-token reply with a native logprob. `pi` exposes no
    logprobs, so the selector asks the session model for one label, accepts only a label it offered, and treats
    everything else as abstention.

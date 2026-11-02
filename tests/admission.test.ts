@@ -144,7 +144,10 @@ test("a committed action is certified only against its exact native receipt", as
   assert.ok(certificate);
   assert.equal(certificate.schema, "certified-native-substitution/v1");
   assert.equal(certificate.candidate_id, "A");
-  assert.equal(certificate.bypassed_slow_callback_id, "boundary-0");
+  // The certificate names the callback that did not happen, not the authoring call.
+  assert.equal(certificate.bypassed_slow_callback_id, "boundary-0:omitted:1");
+  assert.equal(certificate.graph_hash, certificate.bank_sha256);
+  assert.equal(certificate.decision_id, `${String(certificate.bank_sha256).slice(0, 12)}:A`);
   assert.equal(certificate.predecessor_callback_id, "root-call");
   assert.equal(certificate.slow_requests_at_boundary, 0);
   assert.equal(certificate.valid_substitution, true);
@@ -186,4 +189,29 @@ test("the selector may only pick a label it was given", async () => {
   controller.slowTokens = 40000;
   controller.ownSlowCall("boundary-0");
   assert.equal((await controller.decide(b, state(b.candidates as any))).kind, "slow");
+});
+
+test("an oversized public state defers instead of paying for a selector", async () => {
+  const b = bank([node("A"), node("B")]);
+  const huge = Array.from({ length: 600 }, (_, index) => ({ role: "user", content: [{ type: "text", text: `constraint ${index} ${"x".repeat(200)}` }] }));
+  const controller = new SubstitutionController({ policy, record: () => {}, select: async () => ({ label: "A" }) });
+  controller.slowTokens = 40000;
+  controller.ownSlowCall("boundary-0");
+  const decision = await controller.decide(b, { ...state(b.candidates as any), public_user_requests: huge });
+  assert.equal(decision.kind, "slow");
+  assert.equal(decision.kind === "slow" ? decision.reason : "", "public_state_too_large");
+});
+
+test("an unreadable guard defers with the upstream reason name", async () => {
+  const b = bank([node("A", { required_receipt_fields: ["return_code"] })]);
+  const events: any[] = [];
+  const controller = new SubstitutionController({ policy, record: event => events.push(event) });
+  controller.slowTokens = 40000;
+  controller.ownSlowCall("boundary-0");
+  // A receipt that carries no parsable object leaves the guard unknown, not false.
+  const unreadable = { public_user_requests: [], candidates: b.candidates, public_results: [{ call_id: "root", status: "PARSED" as const, value: { native_text: "READY" } }] };
+  const decision = await controller.decide(b, unreadable);
+  assert.equal(decision.kind, "slow");
+  const defer = events.find(event => event.kind === "sar/defer");
+  assert.equal(defer.reason, "guard_unknown");
 });
