@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.1] - 2026-11-04
+
+Windows support for the terminal adapter.
+
+- The shell is no longer hardcoded to `/bin/bash`: Windows uses the first existing Git Bash install, falling back to
+  `bash.exe` from the PATH. Previously every command on Windows returned 127 from a `spawn ENOENT`.
+- A timed-out command is killed with `taskkill /T /F` on Windows, so children no longer keep the pipes open and hold
+  the turn until they exit on their own.
+- The cwd test compares the last path segment, so the suite passes under MSYS and macOS path translation.
+
 ## [0.1.0] - 2026-11-02
 
 Initial port of HarnessMM (arXiv 2610.32813) to pi.

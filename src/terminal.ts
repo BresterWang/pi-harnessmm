@@ -6,7 +6,7 @@
  * that receipt as JSON text. Arguments and receipt shape match the frozen
  * `terminal` contract (`command`, `cwd`, `timeout_sec`).
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
 /** Maximum bytes of each stream kept in the receipt; the rest is dropped with a marker. */
@@ -22,6 +22,15 @@ export const DEFAULT_TIMEOUT_SEC = 120;
  * can otherwise echo a credential into the transcript.
  */
 const SECRET_NAME = /(?:key|password|secret|token|credential|passwd)/i;
+
+/** Git Bash install locations; a bare `bash.exe` would only resolve through the PATH. */
+const WINDOWS_SHELLS = ["C:/Program Files/Git/bin/bash.exe", "C:/Program Files (x86)/Git/bin/bash.exe"];
+
+/** Windows has no `/bin/bash`. */
+function defaultShell(): string {
+  if (process.platform !== "win32") return "/bin/bash";
+  return WINDOWS_SHELLS.find(candidate => existsSync(candidate)) ?? "bash.exe";
+}
 
 /** What a native terminal call produced. This is the only evidence guards read. */
 export interface TerminalReceipt {
@@ -42,7 +51,7 @@ export async function runTerminal(request: TerminalRequest, options: { cwd: stri
   if (!existsSync(cwd)) {
     return { return_code: 1, stdout: "", stderr: `working directory does not exist: ${cwd}` };
   }
-  const shell = options.shell ?? "/bin/bash";
+  const shell = options.shell ?? defaultShell();
   const child = spawn(shell, ["-c", request.command], {
     cwd,
     env: scrubbedEnvironment(),
@@ -110,6 +119,11 @@ function tail(text: string): string {
 }
 
 function killTree(pid: number): void {
+  if (process.platform === "win32") {
+    // Windows has no process groups, and killing the shell alone leaves its children holding the pipes.
+    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
+    return;
+  }
   try {
     process.kill(-pid, "SIGKILL");
   } catch {
