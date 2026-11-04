@@ -322,6 +322,8 @@ async function selectLabel(ctx: ExtensionToolContext, system: string, state: unk
       reply: reply.slice(0, 200),
       parts: answer.content.map(part => part.type),
       usage: usage ?? null,
+      stop_reason: answer.stopReason,
+      error: answer.errorMessage ?? null,
     });
   }
   return { label, ...(usage ? { usage } : {}) };
