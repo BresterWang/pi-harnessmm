@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.4] - 2026-11-04
+
+Give the selector the session id it needs to be routed at all.
+
+- Pi adds OpenCode's `x-opencode-session` header only when the request carries a `sessionId`, and its own agent loop
+  supplies one. A nested `streamSimple` from an extension did not, so every selector request to an OpenCode endpoint came
+  back `400 MissingSessionID` as an empty message with zero usage, and every multi-candidate bank abstained. The selector
+  now passes the current session id.
+- Both halves were measured against the provider: without the header the request is rejected before any tokens, and with
+  it a budget below about 1024 output tokens is consumed entirely by a reasoning item, leaving no text to read.
+
 ## [0.1.3] - 2026-11-04
 
 Correct the selector budget with a measurement instead of a guess.

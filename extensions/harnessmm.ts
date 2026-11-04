@@ -306,7 +306,12 @@ async function selectLabel(ctx: ExtensionToolContext, system: string, state: unk
     systemPrompt: system,
     messages: [{ role: "user", content: [{ type: "text", text: JSON.stringify(state) }], timestamp: Date.now() }],
   };
-  const answer = await ctx.modelRegistry.streamSimple(model, context, { maxTokens: 1024, temperature: 0 }).result();
+  const sessionId = ctx.sessionManager.getSessionId?.();
+  // OpenCode routes on x-opencode-session and answers a request without it with 400 and no
+  // tokens. The agent loop passes the session id; a nested call has to pass it itself.
+  const answer = await ctx.modelRegistry
+    .streamSimple(model, context, { maxTokens: 1024, temperature: 0, ...(sessionId ? { sessionId } : {}) })
+    .result();
   const reply = answer.content
     .filter((part): part is { type: "text"; text: string } => part.type === "text")
     .map(part => part.text)
