@@ -294,7 +294,9 @@ function previousToolCallId(messages: PiMessage[], authoringIndex: number): stri
 /**
  * One-token style selector: ask the session model for a single label.
  * pi exposes no logprobs, so this verifies the reply shape instead of a
- * probability, and any other reply abstains back to slow reasoning.
+ * probability. The budget is a few tokens rather than one because several
+ * providers answer an exactly-one-token request with an empty stream, and any
+ * reply without a standalone label abstains back to slow reasoning.
  */
 async function selectLabel(ctx: ExtensionToolContext, system: string, state: unknown, labels: string[]): Promise<{ label: string; usage?: { inputTokens: number; outputTokens: number; totalTokens: number } }> {
   const model = ctx.model;
@@ -303,14 +305,18 @@ async function selectLabel(ctx: ExtensionToolContext, system: string, state: unk
     systemPrompt: system,
     messages: [{ role: "user", content: [{ type: "text", text: JSON.stringify(state) }], timestamp: Date.now() }],
   };
-  const answer = await ctx.modelRegistry.complete(model, context, { maxTokens: 1, temperature: 0 });
+  const answer = await ctx.modelRegistry.complete(model, context, { maxTokens: 16, temperature: 0 });
   const reply = answer.content
     .filter((part): part is { type: "text"; text: string } => part.type === "text")
     .map(part => part.text)
     .join("")
-    .trim();
+    .trim()
+    .toUpperCase();
+  // A bare label, optionally wrapped in punctuation or prose; "ABORT" must not read as "A".
+  const match = /(?:^|[^A-Z])([A-P])(?![A-Z])/.exec(reply);
+  const label = match && labels.includes(match[1]) ? match[1] : "?";
   const usage = answer.usage
     ? { inputTokens: answer.usage.input ?? 0, outputTokens: answer.usage.output ?? 0, totalTokens: answer.usage.totalTokens ?? 0 }
     : undefined;
-  return labels.includes(reply) ? { label: reply, ...(usage ? { usage } : {}) } : { label: "?", ...(usage ? { usage } : {}) };
+  return { label, ...(usage ? { usage } : {}) };
 }

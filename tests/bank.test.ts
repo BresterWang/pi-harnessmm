@@ -75,9 +75,9 @@ test("v6 refuses nodes whose arguments are not fully resolved", () => {
   ]) {
     assert.throws(() => parseBank(v6Message([bad]), v6, [tool]), (error: unknown) => error instanceof Error, JSON.stringify(bad));
   }
-  // A shell placeholder is legal for this tool schema, so the frozen contract cannot
-  // reject it here; the authoring instruction forbids it and admission refuses the result.
-  assert.ok(parseBank(v6Message([node({ arguments: { command: "printf ${HOME}" } })]), v6, [tool]));
+  // A shell placeholder passes the tool schema, but the documented bank contract forbids it.
+  // Refusing it in the parser keeps the failure visible instead of expanding at run time.
+  assert.throws(() => parseBank(v6Message([node({ arguments: { command: "printf ${HOME}" } })]), v6, [tool]), /placeholder/);
 });
 
 test("a node that repeats the root command is refused", () => {
@@ -144,4 +144,16 @@ test("single-encoding mode refuses a rewritten numeric literal", () => {
   assert.equal(publicReceipt(message, true).status, "PARSED");
   const rewritten = { role: "tool" as const, toolCallId: "n", content: [{ type: "text" as const, text: '{"return_code":01}' }] };
   assert.equal(publicReceipt(rewritten, true).status, "UNKNOWN");
+});
+
+test("a candidate argument with an unresolved placeholder is a contract violation", () => {
+  for (const command of ["echo ${HOME}", "echo {{host}}", "echo $(date)"]) {
+    assert.throws(() => parseBank(slowMessage([{ ...candidate, arguments: { command } }]), v1, [tool]), /placeholder/, command);
+    assert.throws(() => parseBank(v6Message([node({ arguments: { command } })]), v6, [tool]), /placeholder/, command);
+  }
+});
+
+test("a guard may still compare a literal that looks like a placeholder", () => {
+  const guarded = node({ guard: { stdout_contains: "${literal}" }, required_receipt_fields: ["stdout"] });
+  assert.doesNotThrow(() => parseBank(v6Message([guarded]), v6, [tool]));
 });

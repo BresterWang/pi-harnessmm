@@ -1,6 +1,6 @@
 {
   "name": "pi-harnessmm",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "HarnessMM for pi: guarded decision reuse that runs a chain of dependent tool steps inside one call instead of one model round trip per step.",
   "license": "Apache-2.0",
   "author": "jlon",

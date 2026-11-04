@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.2] - 2026-11-04
+
+Fail closed where the contract said it would.
+
+- A candidate argument containing `${...}`, `{{...}}` or `$(...)` is refused by the parser. The README and the
+  tool's own guidance already called it a contract violation, but nothing checked it, so `echo ${HOME}` was executed
+  with the placeholder expanded by the shell and certified as a valid substitution. Reserved for arguments only: a
+  guard may still compare a literal that looks like a placeholder.
+- The selector asks for 16 tokens instead of 1 and accepts a bare label surrounded by prose or punctuation. Several
+  providers answer an exactly-one-token request with an empty stream, which made every multi-candidate bank abstain and
+  pay for a selector call it could never use. `ABORT` still reads as an abstention, not as label `A`.
+
 ## [0.1.1] - 2026-11-04
 
 Windows support for the terminal adapter.

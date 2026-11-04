@@ -106,6 +106,18 @@ function terminalArguments(value: unknown): boolean {
   );
 }
 
+/** Placeholders the shell or a template engine would expand after the bank was authored. */
+const UNRESOLVED_PLACEHOLDER = /\$\{|\{\{|\$\(/;
+
+/** Arguments must be literal: a placeholder is data the receipt cannot carry. */
+function hasUnresolvedPlaceholder(value: unknown, depth = 0): boolean {
+  if (depth > 16) return true;
+  if (typeof value === "string") return UNRESOLVED_PLACEHOLDER.test(value);
+  if (Array.isArray(value)) return value.some(item => hasUnresolvedPlaceholder(item, depth + 1));
+  if (object(value)) return Object.values(value).some(item => hasUnresolvedPlaceholder(item, depth + 1));
+  return false;
+}
+
 /** JSON-Schema subset check used to prove candidate arguments match the tool contract. */
 export function schemaMatches(value: unknown, schema: any, root: any = schema, depth = 0): boolean {
   if (!object(schema) || depth > 16) return false;
@@ -261,6 +273,9 @@ export function parseBank(message: AuthoringMessage | null, policy: Policy, tool
         (!object(candidate.arguments) || !tools.some(tool => tool.name === candidate.tool && schemaMatches(candidate.arguments, tool.parameters))))
     ) {
       throw new BankContractError("Invalid, cyclic, duplicate or unsupported CoT-authored candidate");
+    }
+    if (hasUnresolvedPlaceholder(candidate.arguments)) {
+      throw new BankContractError("Candidate arguments are already determined literals, never placeholders");
     }
     if (policy.version >= 4 && candidate.after === "root" && candidate.tool === roots[0].name && isDeepStrictEqual(candidate.arguments, rootArguments)) {
       throw new BankContractError("A future candidate cannot repeat the already executed native root");
