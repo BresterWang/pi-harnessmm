@@ -295,8 +295,9 @@ function previousToolCallId(messages: PiMessage[], authoringIndex: number): stri
 /**
  * One-token style selector: ask the session model for a single label.
  * pi exposes no logprobs, so this verifies the reply shape instead of a probability.
- * A reasoning model spends the whole allowance thinking and then returns no text, so
- * the request asks for the cheapest thinking level and a budget that survives it.
+ * The budget is not small: a reasoning model answers 16 or 256 output tokens with a
+ * reasoning item and no text at all, and only at 1024 does the label appear after
+ * roughly 900 reasoning tokens. Cheaper budgets abstain, which costs a substitution.
  */
 async function selectLabel(ctx: ExtensionToolContext, system: string, state: unknown, labels: string[], record: (event: ControllerEvent) => void): Promise<{ label: string; usage?: { inputTokens: number; outputTokens: number; totalTokens: number } }> {
   const model = ctx.model;
@@ -305,7 +306,7 @@ async function selectLabel(ctx: ExtensionToolContext, system: string, state: unk
     systemPrompt: system,
     messages: [{ role: "user", content: [{ type: "text", text: JSON.stringify(state) }], timestamp: Date.now() }],
   };
-  const answer = await ctx.modelRegistry.streamSimple(model, context, { maxTokens: 256, temperature: 0, reasoning: "minimal" }).result();
+  const answer = await ctx.modelRegistry.streamSimple(model, context, { maxTokens: 1024, temperature: 0 }).result();
   const reply = answer.content
     .filter((part): part is { type: "text"; text: string } => part.type === "text")
     .map(part => part.text)

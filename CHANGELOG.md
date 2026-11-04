@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.3] - 2026-11-04
+
+Correct the selector budget with a measurement instead of a guess.
+
+- The selector asked for one output token, then for 256. Against a reasoning model both budgets are consumed by a
+  reasoning item and no text is emitted at all, so every multi-candidate bank abstained and paid for a selector call it
+  could never use. 1024 output tokens was measured to produce the label after roughly 900 reasoning tokens; a request
+  with `reasoning.effort: "none"` needs one, but that effort value is provider-specific and is not exposed by pi, so the
+  budget stays provider-neutral.
+- The selector reply parsing moved to `src/selector.ts` and is covered: an offered label with surrounding prose, an
+  unoffered one, and a word that merely starts with a label letter.
+- An abstention now records `jev/selector-abstained` with the reply, its content part types and its usage, because it is
+  the one silent path that costs the caller a substitution.
+
 ## [0.1.2] - 2026-11-04
 
 Fail closed where the contract said it would.
@@ -8,9 +22,9 @@ Fail closed where the contract said it would.
   tool's own guidance already called it a contract violation, but nothing checked it, so `echo ${HOME}` was executed
   with the placeholder expanded by the shell and certified as a valid substitution. Reserved for arguments only: a
   guard may still compare a literal that looks like a placeholder.
-- The selector asks for 16 tokens instead of 1 and accepts a bare label surrounded by prose or punctuation. Several
-  providers answer an exactly-one-token request with an empty stream, which made every multi-candidate bank abstain and
-  pay for a selector call it could never use. `ABORT` still reads as an abstention, not as label `A`.
+- The selector asks for 1024 tokens rather than 1 and accepts a bare label surrounded by prose or punctuation. A
+  reasoning model answers a smaller budget with a reasoning item and no text, which made every multi-candidate bank
+  abstain. `ABORT` still reads as an abstention, not as label `A`.
 
 ## [0.1.1] - 2026-11-04
 
