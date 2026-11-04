@@ -20,6 +20,7 @@ import { SubstitutionController, type ControllerEvent } from "../src/controller.
 import type { TrainPriors } from "../src/admission.ts";
 import { compactMessages, projectionBinding, slowTokensOf, toAuthoringMessage, userRequests, type PiMessage } from "../src/pi-messages.ts";
 import { modelReceiptText, receiptText, runTerminal, type TerminalReceipt } from "../src/terminal.ts";
+import { pickLabel } from "../src/selector.ts";
 
 const LEDGER = "harnessmm-ledger";
 
@@ -309,12 +310,8 @@ async function selectLabel(ctx: ExtensionToolContext, system: string, state: unk
   const reply = answer.content
     .filter((part): part is { type: "text"; text: string } => part.type === "text")
     .map(part => part.text)
-    .join("")
-    .trim()
-    .toUpperCase();
-  // A bare label, optionally wrapped in punctuation or prose; "ABORT" must not read as "A".
-  const match = /(?:^|[^A-Z])([A-P])(?![A-Z])/.exec(reply);
-  const label = match && labels.includes(match[1]) ? match[1] : "?";
+    .join("");
+  const label = pickLabel(reply, labels);
   const usage = answer.usage
     ? { inputTokens: answer.usage.input ?? 0, outputTokens: answer.usage.output ?? 0, totalTokens: answer.usage.totalTokens ?? 0 }
     : undefined;
