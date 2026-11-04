@@ -189,7 +189,7 @@ export default function harnessmm(pi: ExtensionAPI) {
         policy,
         priors,
         record,
-        select: async input => selectLabel(ctx, input.system, input.state, input.labels),
+        select: async input => selectLabel(ctx, input.system, input.state, input.labels, record),
         episodeId: ctx.sessionManager.getSessionId?.() ?? "pi-session",
       });
       const authoringTokens = slowTokensOf(messages[authoringIndex]);
@@ -294,19 +294,18 @@ function previousToolCallId(messages: PiMessage[], authoringIndex: number): stri
 
 /**
  * One-token style selector: ask the session model for a single label.
- * pi exposes no logprobs, so this verifies the reply shape instead of a
- * probability. The budget is a few tokens rather than one because several
- * providers answer an exactly-one-token request with an empty stream, and any
- * reply without a standalone label abstains back to slow reasoning.
+ * pi exposes no logprobs, so this verifies the reply shape instead of a probability.
+ * A reasoning model spends the whole allowance thinking and then returns no text, so
+ * the request asks for the cheapest thinking level and a budget that survives it.
  */
-async function selectLabel(ctx: ExtensionToolContext, system: string, state: unknown, labels: string[]): Promise<{ label: string; usage?: { inputTokens: number; outputTokens: number; totalTokens: number } }> {
+async function selectLabel(ctx: ExtensionToolContext, system: string, state: unknown, labels: string[], record: (event: ControllerEvent) => void): Promise<{ label: string; usage?: { inputTokens: number; outputTokens: number; totalTokens: number } }> {
   const model = ctx.model;
   if (!model) return { label: "?" };
   const context: ModelContext = {
     systemPrompt: system,
     messages: [{ role: "user", content: [{ type: "text", text: JSON.stringify(state) }], timestamp: Date.now() }],
   };
-  const answer = await ctx.modelRegistry.complete(model, context, { maxTokens: 16, temperature: 0 });
+  const answer = await ctx.modelRegistry.streamSimple(model, context, { maxTokens: 256, temperature: 0, reasoning: "minimal" }).result();
   const reply = answer.content
     .filter((part): part is { type: "text"; text: string } => part.type === "text")
     .map(part => part.text)
@@ -315,5 +314,14 @@ async function selectLabel(ctx: ExtensionToolContext, system: string, state: unk
   const usage = answer.usage
     ? { inputTokens: answer.usage.input ?? 0, outputTokens: answer.usage.output ?? 0, totalTokens: answer.usage.totalTokens ?? 0 }
     : undefined;
+  if (label === "?") {
+    // An abstention is the only silent path that costs the caller a substitution, so keep its cause.
+    record({
+      kind: "jev/selector-abstained",
+      reply: reply.slice(0, 200),
+      parts: answer.content.map(part => part.type),
+      usage: usage ?? null,
+    });
+  }
   return { label, ...(usage ? { usage } : {}) };
 }
